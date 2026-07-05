@@ -364,14 +364,28 @@
     <div class="tab" data-tab="setup">Ajustes</div>
   </div>
 
+  <!-- CONFIG API (só aparece se ainda não configurado) -->
+  <div class="card" id="cardConfig" style="display:none;">
+    <h2>⚙️ Primeira vez configurando</h2>
+    <div style="font-family:'Space Mono',monospace; font-size:0.8rem; color:#555; margin-bottom:14px;">
+      Cole sua chave do jsonbin.io (X-Master-Key). Isso só precisa ser feito uma vez — depois o site gera um link único pra compartilhar com a família.
+    </div>
+    <input type="text" id="inputApiKey" placeholder="Cole sua X-Master-Key aqui">
+    <button id="btnSalvarConfig">Salvar e continuar</button>
+    <div style="font-family:'Space Mono',monospace; font-size:0.7rem; color:#999; margin-top:10px;">
+      Não tem chave ainda? Crie gratis em jsonbin.io → API Keys.
+    </div>
+  </div>
+
   <!-- QUEM SOU EU -->
-  <div class="card" id="cardQuemSouEu">
+  <div class="card" id="cardQuemSouEu" style="display:none;">
     <h2>Quem é você?</h2>
     <div class="row">
       <input type="text" id="inputMeuNome" placeholder="Seu nome (ex: Tio Marcos)">
       <button id="btnEntrar">Entrar</button>
     </div>
     <div class="aviso-compartilhado">Todo mundo da família vê os mesmos jogos e o mesmo ranking 🏆</div>
+    <div class="aviso-compartilhado" id="linkCompartilhar" style="word-break:break-all;"></div>
   </div>
 
   <div id="appConteudo" style="display:none;">
@@ -428,46 +442,147 @@
 </main>
 
 <script>
-const st = window.storage;
+// ===================== CONFIG / STORAGE (jsonbin.io) =====================
+const API_BASE = 'https://api.jsonbin.io/v3/b';
+let apiKey = null;
+let binId = null;
 let meuNome = null;
-let jogos = [];        // {id, timeA, timeB, fase, placarA, placarB (oficial ou null)}
+let jogos = [];        // {id, timeA, timeB, fase, placarA, placarB}
 let palpites = {};     // key: `${jogoId}:${nome}` -> {a,b}
+let pollTimer = null;
 
-function slug(s){ return s.trim().toLowerCase().replace(/\s+/g,'_'); }
+function lerParamsUrl(){
+  const params = new URLSearchParams(window.location.search);
+  return { bin: params.get('bin'), key: params.get('key') };
+}
+
+function atualizarUrl(){
+  const url = new URL(window.location.href);
+  url.searchParams.set('bin', binId);
+  url.searchParams.set('key', apiKey);
+  window.history.replaceState({}, '', url.toString());
+  return url.toString();
+}
+
+async function criarBinNovo(){
+  const dadosIniciais = { jogos: [], palpites: {} };
+  const resp = await fetch(API_BASE, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Master-Key': apiKey,
+      'X-Bin-Name': 'bolao-familia'
+    },
+    body: JSON.stringify(dadosIniciais)
+  });
+  if(!resp.ok) throw new Error('Falha ao criar bin: ' + resp.status);
+  const data = await resp.json();
+  return data.metadata.id;
+}
+
+async function lerBin(){
+  const resp = await fetch(`${API_BASE}/${binId}/latest`, {
+    headers: { 'X-Master-Key': apiKey }
+  });
+  if(!resp.ok) throw new Error('Falha ao ler dados: ' + resp.status);
+  const data = await resp.json();
+  return data.record;
+}
+
+async function salvarBin(){
+  const resp = await fetch(`${API_BASE}/${binId}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Master-Key': apiKey,
+      'X-Bin-Versioning': 'false'
+    },
+    body: JSON.stringify({ jogos, palpites })
+  });
+  if(!resp.ok) throw new Error('Falha ao salvar: ' + resp.status);
+  return true;
+}
 
 async function carregarTudo(){
   try{
-    const r = await st.get('jogos', true);
-    jogos = r ? JSON.parse(r.value) : [];
-  }catch(e){ jogos = []; }
-
-  try{
-    const r = await st.get('palpites', true);
-    palpites = r ? JSON.parse(r.value) : {};
-  }catch(e){ palpites = {}; }
+    const record = await lerBin();
+    jogos = record.jogos || [];
+    palpites = record.palpites || {};
+    return true;
+  }catch(e){
+    console.error('Erro ao carregar dados:', e);
+    return false;
+  }
 }
 
 async function salvarJogos(){
   try{
-    const r = await st.set('jogos', JSON.stringify(jogos), true);
-    if(!r) console.error('salvarJogos: retorno vazio');
+    await salvarBin();
     return true;
   }catch(e){
     console.error('Erro ao salvar jogos:', e);
-    alert('Não consegui salvar o jogo. Tenta de novo em alguns segundos.');
+    alert('Não consegui salvar o jogo. Confira sua internet e tenta de novo.');
     return false;
   }
 }
 async function salvarPalpites(){
   try{
-    const r = await st.set('palpites', JSON.stringify(palpites), true);
-    if(!r) console.error('salvarPalpites: retorno vazio');
+    await salvarBin();
     return true;
   }catch(e){
     console.error('Erro ao salvar palpites:', e);
+    alert('Não consegui salvar seu palpite. Confira sua internet e tenta de novo.');
     return false;
   }
 }
+
+// polling simples pra sincronizar entre celulares diferentes
+function iniciarSincronizacao(){
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(async ()=>{
+    const ok = await carregarTudo();
+    if(ok){
+      const abaAtiva = document.querySelector('.tab.active').dataset.tab;
+      if(abaAtiva === 'jogos') renderJogos();
+      if(abaAtiva === 'ranking') renderRanking();
+      if(abaAtiva === 'setup') renderSetupJogos();
+    }
+  }, 8000);
+}
+
+// ===================== INICIALIZAÇÃO =====================
+window.addEventListener('DOMContentLoaded', ()=>{
+  const paramsUrl = lerParamsUrl();
+  if(paramsUrl.bin && paramsUrl.key){
+    binId = paramsUrl.bin;
+    apiKey = paramsUrl.key;
+    document.getElementById('cardQuemSouEu').style.display = 'block';
+  } else {
+    document.getElementById('cardConfig').style.display = 'block';
+  }
+});
+
+document.getElementById('btnSalvarConfig').addEventListener('click', async ()=>{
+  const key = document.getElementById('inputApiKey').value.trim();
+  if(!key){ alert('Cola sua chave do jsonbin.io ali.'); return; }
+  apiKey = key;
+  const btn = document.getElementById('btnSalvarConfig');
+  btn.disabled = true;
+  btn.textContent = 'Criando bolão...';
+  try{
+    binId = await criarBinNovo();
+    atualizarUrl();
+    document.getElementById('cardConfig').style.display = 'none';
+    document.getElementById('cardQuemSouEu').style.display = 'block';
+    const avisoLink = document.getElementById('linkCompartilhar');
+    avisoLink.innerHTML = `Link do seu bolão (salve/copie a URL do navegador depois de entrar) para mandar pra família.`;
+  }catch(e){
+    console.error(e);
+    alert('Não consegui criar o bolão. Confira se a chave está certa.');
+    btn.disabled = false;
+    btn.textContent = 'Salvar e continuar';
+  }
+});
 
 // ---------- TABS ----------
 document.querySelectorAll('.tab').forEach(tab=>{
@@ -477,26 +592,43 @@ document.querySelectorAll('.tab').forEach(tab=>{
     tab.classList.add('active');
     document.getElementById('sec' + tab.dataset.tab.charAt(0).toUpperCase() + tab.dataset.tab.slice(1)).classList.add('active');
     if(tab.dataset.tab === 'ranking') renderRanking();
+    if(tab.dataset.tab === 'setup') renderSetupJogos();
   });
 });
 
 // ---------- ENTRAR ----------
 document.getElementById('btnEntrar').addEventListener('click', async ()=>{
   const nome = document.getElementById('inputMeuNome').value.trim();
-  if(!nome){ return; }
+  if(!nome) return;
+  const btn = document.getElementById('btnEntrar');
+  btn.disabled = true;
+  btn.textContent = '...';
+
+  const ok = await carregarTudo();
+  if(!ok){
+    alert('Não consegui conectar ao bolão. Confira sua internet.');
+    btn.disabled = false;
+    btn.textContent = 'Entrar';
+    return;
+  }
+
   meuNome = nome;
-  localStorage_fallback_set(nome);
   document.getElementById('cardQuemSouEu').style.display = 'none';
   document.getElementById('appConteudo').style.display = 'block';
   document.getElementById('saudacao').textContent = `Oi, ${nome}! 👋`;
-  await carregarTudo();
+
+  const link = atualizarUrl();
+  const avisoLink = document.getElementById('linkCompartilhar');
+  if(avisoLink) avisoLink.textContent = '';
+
   renderJogos();
   renderSetupJogos();
   renderRanking();
-});
+  iniciarSincronizacao();
 
-// não usamos localStorage real (proibido em artifacts) - guardamos só em memória da sessão
-function localStorage_fallback_set(nome){ /* nome já está em meuNome, no-op */ }
+  btn.disabled = false;
+  btn.textContent = 'Entrar';
+});
 
 document.getElementById('inputMeuNome').addEventListener('keydown', (e)=>{
   if(e.key === 'Enter') document.getElementById('btnEntrar').click();
@@ -544,18 +676,26 @@ function renderJogos(){
 
     if(!temResultado){
       const inputs = div.querySelectorAll('input');
+      let debounce = null;
       inputs.forEach(inp=>{
-        inp.addEventListener('input', async ()=>{
+        inp.addEventListener('input', ()=>{
           inp.value = inp.value.replace(/[^0-9]/g,'').slice(0,2);
           const a = div.querySelector('[data-side="a"]').value;
           const b = div.querySelector('[data-side="b"]').value;
           palpites[key] = {a, b};
-          await salvarPalpites();
           const statusEl = document.getElementById(`status-${jogo.id}`);
-          if(a !== '' && b !== ''){
-            statusEl.textContent = 'Palpite salvo ✔';
-            statusEl.classList.add('salvo');
-          }
+          statusEl.textContent = 'Salvando...';
+          statusEl.classList.remove('salvo');
+          if(debounce) clearTimeout(debounce);
+          debounce = setTimeout(async ()=>{
+            if(a !== '' && b !== ''){
+              const ok = await salvarPalpites();
+              if(ok){
+                statusEl.textContent = 'Palpite salvo ✔';
+                statusEl.classList.add('salvo');
+              }
+            }
+          }, 500);
         });
       });
     }
@@ -602,7 +742,6 @@ document.getElementById('btnAddJogo').addEventListener('click', async ()=>{
   jogos.push(novo);
   const ok = await salvarJogos();
   if(!ok){
-    // reverte se não conseguiu salvar de fato
     jogos = jogos.filter(j => j.id !== novo.id);
   } else {
     campoA.value = '';
@@ -633,8 +772,10 @@ function renderSetupJogos(){
     btn.className = 'small danger';
     btn.textContent = 'Remover';
     btn.addEventListener('click', async ()=>{
+      const anteriores = [...jogos];
       jogos = jogos.filter(j=>j.id !== jogo.id);
-      await salvarJogos();
+      const ok = await salvarJogos();
+      if(!ok) jogos = anteriores;
       renderSetupJogos();
       renderJogos();
       popularSelectResultado();
@@ -670,9 +811,26 @@ document.getElementById('btnSalvarResultado').addEventListener('click', async ()
   if(!jogoId || a === '' || b === '') return;
   const jogo = jogos.find(j=>j.id === jogoId);
   if(!jogo) return;
+
+  const anteriorA = jogo.placarA, anteriorB = jogo.placarB;
   jogo.placarA = parseInt(a);
   jogo.placarB = parseInt(b);
-  await salvarJogos();
+
+  const btn = document.getElementById('btnSalvarResultado');
+  btn.disabled = true;
+  btn.textContent = 'Salvando...';
+
+  const ok = await salvarJogos();
+
+  btn.disabled = false;
+  btn.textContent = 'Confirmar resultado e apurar pontos';
+
+  if(!ok){
+    jogo.placarA = anteriorA;
+    jogo.placarB = anteriorB;
+    return;
+  }
+
   document.getElementById('resultadoA').value = '';
   document.getElementById('resultadoB').value = '';
   renderJogos();
@@ -684,7 +842,6 @@ document.getElementById('btnSalvarResultado').addEventListener('click', async ()
 function renderRanking(){
   const el = document.getElementById('listaRanking');
 
-  // descobrir todos os nomes que já palpitaram
   const nomes = new Set();
   Object.keys(palpites).forEach(key=>{
     const nome = key.split(':').slice(1).join(':');
@@ -731,3 +888,4 @@ function renderRanking(){
 
 </body>
 </html>
+
