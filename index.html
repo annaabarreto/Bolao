@@ -671,6 +671,8 @@ function renderJogos(){
         </div>
         ${temResultado ? `<div class="resultado-oficial">Resultado oficial: ${jogo.timeA} ${jogo.placarA} × ${jogo.placarB} ${jogo.timeB}</div>` : ''}
         <div class="placar-status" id="status-${jogo.id}">${temResultado ? pontosTxt : (meuPalpite.a !== '' ? 'Palpite salvo ✔' : 'Ainda sem palpite')}</div>
+        <button class="ghost small btn-ver-palpites" data-jogo="${jogo.id}" style="width:100%; margin-top:10px;">👀 Ver palpites de todos</button>
+        <div class="lista-palpites-todos" id="palpites-todos-${jogo.id}" style="display:none;"></div>
       </div>
     `;
 
@@ -700,8 +702,56 @@ function renderJogos(){
       });
     }
 
+    const btnVer = div.querySelector('.btn-ver-palpites');
+    btnVer.addEventListener('click', ()=>{
+      const painel = document.getElementById(`palpites-todos-${jogo.id}`);
+      const aberto = painel.style.display !== 'none';
+      if(aberto){
+        painel.style.display = 'none';
+        btnVer.textContent = '👀 Ver palpites de todos';
+      } else {
+        painel.innerHTML = montarListaPalpites(jogo);
+        painel.style.display = 'block';
+        btnVer.textContent = '🙈 Esconder palpites';
+      }
+    });
+
     el.appendChild(div);
   });
+}
+
+function montarListaPalpites(jogo){
+  const temResultado = jogo.placarA !== null && jogo.placarA !== undefined && jogo.placarA !== '';
+  const entradas = [];
+  Object.keys(palpites).forEach(key=>{
+    const [jogoId, ...resto] = key.split(':');
+    if(jogoId !== jogo.id) return;
+    const nome = resto.join(':');
+    const p = palpites[key];
+    if(!nome || p.a === '' || p.a === undefined || p.b === '' || p.b === undefined) return;
+    entradas.push({nome, a: p.a, b: p.b});
+  });
+
+  if(entradas.length === 0){
+    return '<div class="vazio" style="padding:14px 4px;">Ninguém palpitou esse jogo ainda.</div>';
+  }
+
+  entradas.sort((x,y)=>x.nome.localeCompare(y.nome));
+
+  let linhas = entradas.map(ent=>{
+    let extra = '';
+    if(temResultado){
+      const pts = calcPontos(parseInt(ent.a), parseInt(ent.b), parseInt(jogo.placarA), parseInt(jogo.placarB));
+      extra = pts === 3 ? ' 🎯' : pts === 1 ? ' ✅' : ' ❌';
+    }
+    const destaque = ent.nome === meuNome ? ' style="font-weight:700;"' : '';
+    return `<div class="jogo-linha" style="font-family:'Archivo',sans-serif;">
+      <span${destaque}>${ent.nome}${ent.nome === meuNome ? ' (você)' : ''}</span>
+      <span style="font-family:'Space Mono',monospace;">${ent.a} × ${ent.b}${extra}</span>
+    </div>`;
+  }).join('');
+
+  return linhas;
 }
 
 function calcPontos(palA, palB, oficA, oficB){
@@ -888,4 +938,3 @@ function renderRanking(){
 
 </body>
 </html>
-
